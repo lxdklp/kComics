@@ -1,0 +1,44 @@
+{
+    "acknowledgments": [
+        {
+            "name": "pinyin-data",
+            "info": "拼音数据",
+            "url": "https://github.com/mozillazg/pinyin-data"
+        },
+        {
+            "name": "hanzi-words",
+            "info": "词典数据",
+            "url": "https://github.com/zispace/hanzi-words"
+        },
+        {
+            "name": "calibre",
+            "info": "用于处理mobi",
+            "url": "https://github.com/kovidgoyal/calibre"
+        },
+        {
+            "name": "KOReader",
+            "info": "软件实现参考",
+            "url": "https://github.com/koreader/koreader"
+        },
+        {
+            "name": "copymanga-downloader",
+            "info": "API 参考",
+            "url": "https://github.com/lanyeeee/copymanga-downloader"
+        },
+        {
+            "name": "evdev",
+            "info": "触控输入处理",
+            "url": "https://github.com/gvalkov/python-evdev"
+        },
+        {
+            "name": "Pillow",
+            "info": "图像合成与处理",
+            "url": "https://github.com/python-pillow/Pillow"
+        },
+        {
+            "name": "lxml",
+            "info": "文件处理",
+            "url": "https://github.com/lxml/lxml"
+        }
+    ]
+}

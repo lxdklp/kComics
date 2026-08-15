@@ -1,0 +1,169 @@
+# 触摸屏输入:设备初始化,坐标映射与手势字典格式化
+import glob
+
+from evdev import InputDevice, ecodes
+
+from .parser import GestureConfig, MultiTouchParser
+from .reader import open_device
+
+# 触控类设备所需的绝对坐标掩码(EV_ABS)
+TOUCH_ABS_REQUIRED = frozenset((ecodes.ABS_MT_POSITION_X, ecodes.ABS_MT_POSITION_Y))
+# 多点触控协议所需的事件码掩码
+TOUCH_MT_REQUIRED = frozenset((ecodes.ABS_MT_SLOT, ecodes.ABS_MT_TRACKING_ID))
+# 一键式触控判据:直接输入设备属性(坐标直接对应屏幕)
+PROP_DIRECT = frozenset((ecodes.INPUT_PROP_DIRECT,))
+
+# 设备识别
+def _has_touch_caps(dev):
+    #按能力位掩码判断设备是否为触控类
+    caps = dev.capabilities(absinfo=True)
+    try:
+        props = set(dev.input_props())
+    except (AttributeError, OSError):
+        props = set()
+    direct = bool(props & PROP_DIRECT)
+
+    abs_codes = set()
+    for item in caps.get(ecodes.EV_ABS, []):
+        code = item[0] if isinstance(item, tuple) else item
+        abs_codes.add(code)
+    key_codes = set(caps.get(ecodes.EV_KEY, []))
+
+    has_xy = TOUCH_ABS_REQUIRED <= abs_codes
+    has_mt = TOUCH_MT_REQUIRED <= abs_codes
+    has_btn_touch = ecodes.BTN_TOUCH in key_codes
+
+    # 多点触控屏:绝对坐标 + MT 协议并具备触点坐标
+    if has_xy and has_mt:
+        return True
+    # 直接输入设备(坐标直接对应屏幕)且带绝对坐标或 BTN_TOUCH
+    if direct and (has_xy or has_btn_touch):
+        return True
+    return False
+
+# 扫描设备
+def _detect_touch_device(fallback="/dev/input/event1"):
+    for path in sorted(glob.glob("/dev/input/event*")):
+        try:
+            dev = InputDevice(path)
+        except (OSError, PermissionError):
+            continue
+        if not _has_touch_caps(dev):
+            continue
+        abs_items = {}
+        for item in dev.capabilities(absinfo=True).get(ecodes.EV_ABS, []):
+            if isinstance(item, tuple):
+                code, info = item
+                abs_items[code] = info
+        absinfo_x = abs_items.get(ecodes.ABS_MT_POSITION_X)
+        absinfo_y = abs_items.get(ecodes.ABS_MT_POSITION_Y)
+        if absinfo_x is not None and absinfo_y is not None:
+            return path, dev.name, absinfo_x, absinfo_y
+    return None
+
+# 触控输入类
+class ScreenInput:
+    # 设备初始化,坐标映射与手势字典格式化
+    def __init__(self, screen):
+        self.screen = screen
+        self.device = None
+        self.device_path = None
+        self.name = None
+        self.min_x = 0
+        self.max_x = 0
+        self.min_y = 0
+        self.max_y = 0
+        self.render_w = 0
+        self.render_h = 0
+    # 初始化触摸屏
+    def initialization(self, render_w=0, render_h=0, fallback="/dev/input/event1"):
+        result = _detect_touch_device(fallback)
+        if result is None:
+            print(f"[屏幕] 未能识别触控设备(含回退 {fallback}),初始化失败")
+            return None
+        path, name, absinfo_x, absinfo_y = result
+
+        self.device_path = path
+        self.name = name
+        self.min_x = absinfo_x.min
+        self.max_x = absinfo_x.max
+        self.min_y = absinfo_y.min
+        self.max_y = absinfo_y.max
+        self.render_w = render_w
+        self.render_h = render_h
+        try:
+            self.device = open_device(path)
+        except PermissionError:
+            print(f"[屏幕] 无法打开 {path}:权限不足,请以 root 运行")
+            return None
+
+        w, h = self.resolution
+        extra = f" 渲染分辨率={render_w}x{render_h}" if render_w and render_h else ""
+        print(f"[屏幕] 识别到触摸设备 {path} 名称={name} 分辨率={w}x{h}{extra}")
+        return True
+
+    @property
+    # 返回触摸屏硬件分辨率 (宽, 高)
+    def resolution(self):
+        return self.max_x, self.max_y
+
+    # 将硬件坐标转换为屏幕百分比坐标 (0.0~1.0)
+    def to_ratio(self, x, y, clamp=True):
+        range_x = max(1, self.max_x - self.min_x)
+        range_y = max(1, self.max_y - self.min_y)
+        rx = (x - self.min_x) / range_x
+        ry = (y - self.min_y) / range_y
+        if clamp:
+            rx = min(1.0, max(0.0, rx))
+            ry = min(1.0, max(0.0, ry))
+        return rx, ry
+
+    # 将硬件坐标转换为渲染分辨率像素坐标
+    def to_pixels(self, x, y, clamp=True):
+        rx, ry = self.to_ratio(x, y, clamp=clamp)
+        if self.render_w and self.render_h:
+            return int(rx * self.render_w), int(ry * self.render_h)
+        return int(rx * self.max_x), int(ry * self.max_y)
+
+    # 将硬件坐标转换为比例坐标
+    def _point(self, x, y):
+        px, py = self.to_pixels(x, y)
+        rx, ry = self.to_ratio(x, y)
+        return {"x-pixel": px, "y-pixel": py, "x-ratio": round(rx, 4), "y-ratio": round(ry, 4)}
+
+    # 把手势对象格式化为字典
+    def get(self, gesture):
+        """
+        tap/long-press 返回单点字段,up/down/left/right 返回起点与终点字段,
+        duration 单位为毫秒::
+            {'gesture': 'tap', 'x-pixel': .., 'y-pixel': ..,
+            'x-ratio': .., 'y-ratio': .., 'duration': ..}
+            {'gesture': 'up', 'start': {...}, 'end': {...},
+            'duration': .., 'distance': ..}
+        """
+        data = {
+            "gesture": gesture.kind,
+            "duration": int(gesture.duration * 1000),
+        }
+        if gesture.kind in ("up", "down", "left", "right"):
+            data["distance"] = gesture.distance
+            data["start"] = self._point(*gesture.start)
+            data["end"] = self._point(*gesture.end)
+        else:
+            data.update(self._point(*gesture.start))
+        return data
+
+    # 事件循环
+    def listen(self, on_gesture=None, on_down=None):
+        parser = MultiTouchParser(
+            config=GestureConfig(),
+            on_down=on_down,
+            on_gesture=lambda g: on_gesture(self.get(g)) if on_gesture else None,
+        )
+        print("正在监听触摸输入")
+        try:
+            assert self.device is not None
+            for ev in self.device.read_loop():
+                parser.handle_event(ev)
+        except KeyboardInterrupt:
+            print("正在退出")

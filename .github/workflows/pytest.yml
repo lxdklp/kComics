@@ -1,0 +1,28 @@
+name: pytest
+on: push
+
+jobs:
+  test:
+    name: 测试 (${{ matrix.resolution }})
+    runs-on: ubuntu-slim
+    strategy:
+      fail-fast: false
+      matrix:
+        resolution:
+          - "1072x1448"   # Kindle 11 / Voyage / PW3 / Oasis 1 / PW4
+          - "1236x1648"   # Paperwhite 5
+          - "1264x1680"   # Oasis 2/3 / Colorsoft
+          - "1272x1696"   # Paperwhite 6
+          - "1860x2480"   # Scribe 2022/24
+          - "1980x2640"   # 2025 Scribe / Scribe Colorsoft
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: 安装依赖
+        run: pip install pytest pillow lxml css_parser
+      - name: 正在测试 (${{ matrix.resolution }})
+        env:
+          TEST_RESOLUTIONS: ${{ matrix.resolution }}
+        run: python -m pytest tests/ -v

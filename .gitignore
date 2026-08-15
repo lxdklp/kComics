@@ -1,0 +1,10 @@
+.venv/
+.vscode/
+.pytest_cache/
+tools/
+
+__pycache__
+**/*.pyc
+
+clean_pycache.ps1
+bin/demo.py

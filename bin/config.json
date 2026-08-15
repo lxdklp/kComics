@@ -1,0 +1,11 @@
+{
+  "api_url": "api.copy202601.com",
+  "username": "",
+  "token": "",
+  "download_concurrency": 5,
+  "export_rtl": true,
+  "kindle_documents_dir": "/mnt/us/documents/kcomics",
+  "export_merged": true,
+  "export_chapters_per_book": 5,
+  "check_update": true
+}

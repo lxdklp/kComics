@@ -1,0 +1,5 @@
+{
+	"items": [
+		{"name": "kComics", "priority": 1, "action": "bin/start.sh"}
+	]
+}

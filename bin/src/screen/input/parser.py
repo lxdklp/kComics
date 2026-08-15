@@ -1,0 +1,193 @@
+# 触控解析器
+import time
+from dataclasses import dataclass
+
+from evdev import ecodes
+
+
+@dataclass
+class GestureConfig:
+    tap_max_move_px: int = 30
+    tap_max_duration_s: float = 0.30
+    long_press_min_duration_s: float = 0.5
+    swipe_min_distance_px: int = 40
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+
+
+@dataclass
+class Gesture:
+    kind: str
+    slot: int
+    tracking_id: int
+    start: tuple
+    end: tuple
+    duration: float
+    distance: int
+    timestamp: float
+
+
+class MultiTouchParser:
+    """跟踪多点触控 slot 状态,并把 evdev 事件流转换为手势回调.
+
+    用法示例::
+
+        parser = MultiTouchParser(
+            on_down=lambda s, t, x, y: print("按下", x, y),
+            on_gesture=lambda g: print("手势", g.kind, "起点", g.start, "终点", g.end),
+        )
+        read_loop(dev, parser.handle_event)
+    """
+
+    def __init__(self, config=None, on_down=None, on_move=None, on_up=None, on_gesture=None):
+        self.config = config or GestureConfig()
+        self.on_down_cb = on_down
+        self.on_move_cb = on_move
+        self.on_up_cb = on_up
+        self.on_gesture_cb = on_gesture
+
+        self.slots = {}
+        self.current_slot = 0
+        self.tracking_to_slot = {}
+        self.btn_touch = 0
+
+    def _scale(self, x, y):
+        return int(x * self.config.scale_x), int(y * self.config.scale_y)
+
+    def handle_event(self, ev):
+        if ev.type == ecodes.EV_ABS:
+            code = ev.code
+            val = ev.value
+            if code == ecodes.ABS_MT_SLOT:
+                self.current_slot = val
+                if self.current_slot not in self.slots:
+                    self.slots[self.current_slot] = {"tracking_id": -1, "x": None, "y": None}
+            elif code == ecodes.ABS_MT_TRACKING_ID:
+                tid = val
+                slot = self.current_slot
+                if slot not in self.slots:
+                    self.slots[slot] = {"tracking_id": -1, "x": None, "y": None}
+                prev_tid = self.slots[slot].get("tracking_id", -1)
+                if tid == -1:
+                    if prev_tid != -1:
+                        self._do_up(slot, prev_tid)
+                    self.slots[slot] = {"tracking_id": -1, "x": None, "y": None}
+                    if prev_tid in self.tracking_to_slot:
+                        del self.tracking_to_slot[prev_tid]
+                else:
+                    now = time.time()
+                    self.slots[slot] = {
+                        "tracking_id": tid,
+                        "x": None,
+                        "y": None,
+                        "start_ts": now,
+                        "last_ts": now,
+                        "start_pos": None,
+                    }
+                    self.tracking_to_slot[tid] = slot
+            elif code in (ecodes.ABS_MT_POSITION_X, ecodes.ABS_X):
+                slot = self.current_slot
+                self._ensure_slot(slot)
+                x, _ = self._scale(val, 0)
+                self._update_pos(slot, x, None, set_x=True)
+            elif code in (ecodes.ABS_MT_POSITION_Y, ecodes.ABS_Y):
+                slot = self.current_slot
+                self._ensure_slot(slot)
+                _, y = self._scale(0, val)
+                self._update_pos(slot, None, y, set_x=False)
+
+        elif ev.type == ecodes.EV_KEY:
+            if ev.code == ecodes.BTN_TOUCH:
+                self.btn_touch = ev.value
+
+    def _ensure_slot(self, slot):
+        if slot not in self.slots:
+            self.slots[slot] = {"tracking_id": -1, "x": None, "y": None}
+
+    def _update_pos(self, slot, x, y, set_x):
+        s = self.slots[slot]
+        if set_x:
+            s["x"] = x
+        else:
+            s["y"] = y
+        s["last_ts"] = time.time()
+        sp = s.get("start_pos")
+        if sp is None:
+            s["start_pos"] = (s.get("x"), s.get("y"))
+        else:
+            sx, sy = sp
+            if sx is None and s.get("x") is not None:
+                s["start_pos"] = (s["x"], sy)
+            elif sy is None and s.get("y") is not None:
+                s["start_pos"] = (sx, s["y"])
+        if self._slot_has_coords(slot) and "down_reported" not in s:
+            s["down_reported"] = True
+            self._do_down(slot, s["tracking_id"], s["x"], s["y"])
+        elif self._slot_has_coords(slot):
+            self._do_move(slot, s["tracking_id"], s["x"], s["y"])
+
+    def _slot_has_coords(self, slot):
+        s = self.slots.get(slot, {})
+        return s.get("x") is not None and s.get("y") is not None and s.get("tracking_id", -1) != -1
+
+    def _do_down(self, slot, tracking_id, x, y):
+        if self.on_down_cb is not None:
+            self.on_down_cb(slot, tracking_id, x, y)
+
+    def _do_move(self, slot, tracking_id, x, y):
+        if self.on_move_cb is not None:
+            self.on_move_cb(slot, tracking_id, x, y)
+
+    def _do_up(self, slot, tracking_id):
+        s = self.slots.get(slot, {})
+        end_x = s.get("x")
+        end_y = s.get("y")
+        start_ts = s.get("start_ts")
+        start_pos = s.get("start_pos", (end_x, end_y))
+        now = time.time()
+        duration = (now - start_ts) if start_ts else 0.0
+        sx, sy = start_pos if start_pos else (None, None)
+        ex, ey = end_x, end_y
+        if sx is None:
+            sx = ex
+        if sy is None:
+            sy = ey
+        if ex is None:
+            ex = sx
+        if ey is None:
+            ey = sy
+        if None in (sx, sy, ex, ey):
+            sx = sy = ex = ey = 0
+        dx = ex - sx
+        dy = ey - sy
+        dist = (dx * dx + dy * dy) ** 0.5 if dx or dy else 0
+
+        cfg = self.config
+        kind = "unknown"
+        if dist <= cfg.tap_max_move_px:
+            # 短按为 tap,长按为 long
+            if duration <= cfg.tap_max_duration_s:
+                kind = "tap"
+            elif duration >= cfg.long_press_min_duration_s:
+                kind = "long"
+        elif dist >= cfg.swipe_min_distance_px:
+            # 滑动方向
+            if abs(dx) > abs(dy):
+                kind = "left" if dx < 0 else "right"
+            else:
+                kind = "up" if dy < 0 else "down"
+
+        gesture = Gesture(
+            kind=kind,
+            slot=slot,
+            tracking_id=tracking_id,
+            start=(sx, sy),
+            end=(ex, ey),
+            duration=duration,
+            distance=int(dist),
+            timestamp=now,
+        )
+        if self.on_up_cb is not None:
+            self.on_up_cb(gesture)
+        if self.on_gesture_cb is not None and kind != "unknown":
+            self.on_gesture_cb(gesture)
