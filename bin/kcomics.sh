@@ -1,11 +1,14 @@
 #!/bin/sh
-LOG_DIR=/mnt/us/extensions/kcomics/bin/logs
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+
+LOG_DIR="$SCRIPT_DIR/logs"
 LOG_FILE="$LOG_DIR/kcomics.log"
 PAUSE_LIST="/tmp/kcomics_paused_pids"
 FB_DEV="/dev/fb0"
 FB_SNAPSHOT="/tmp/kcomics_fb.bin"
 PYTHON=/mnt/us/python3/bin/python3.14
-KCOMICS_DIR=/mnt/us/extensions/kcomics/bin
+KCOMICS_DIR="$SCRIPT_DIR"
 
 export LD_LIBRARY_PATH=$KCOMICS_DIR/lib:$LD_LIBRARY_PATH
 export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt

@@ -49,7 +49,8 @@ def _all_items():
     items = list(ITEMS)
     items.append(CLEAN_ITEM)
     items.append(SDR_ITEM)
-    items.append(LIB_ITEM)
+    if _install_mode() == "kual":
+        items.append(LIB_ITEM)
     if _logged_in():
         items.append(EXIT_ITEM)
     return items
@@ -164,7 +165,7 @@ def refresh_size(screen, fonts):
             print(f"[设置] 统计缓存大小失败:{type(e).__name__}: {e}")
             STATE["dir_size"] = 0
         try:
-            STATE["library_on"] = _lib_on()
+            STATE["library_on"] = _lib_on() if _install_mode() == "kual" else False
         except Exception as e:
             print(f"[设置] 检测图书馆开关失败:{type(e).__name__}: {e}")
             STATE["library_on"] = False
@@ -254,12 +255,21 @@ def _bin_dir():
     return os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))))
 
-def _lib_paths():
-    """返回 (源文件 bin/app.sh, 目标 documents/app.sh)."""
-    return (os.path.join(_bin_dir(), "app.sh"),
-            os.path.join(config.get_kindle_documents_dir(), "app.sh"))
+# 安装方式
+def _install_mode():
+    root = os.path.dirname(_bin_dir())
+    if root.startswith("/mnt/us/extensions/"):
+        return "kual"
+    if root.startswith("/mnt/us/kmc/kpm/packages/"):
+        return "kpm"
+    return "unknown"
 
-# 检查 app.sh
+def _lib_paths():
+    """返回 (源文件 bin/kual.sh, 目标 documents/kual.sh)."""
+    return (os.path.join(_bin_dir(), "kual.sh"),
+            os.path.join(config.get_kindle_documents_dir(), "kual.sh"))
+
+# 检查 kual.sh
 def _same_file(a, b):
     try:
         if os.path.getsize(a) != os.path.getsize(b):
@@ -280,11 +290,11 @@ def toggle_library(screen, fonts):
         if on:
             if os.path.exists(dst):
                 os.unlink(dst)
-            print(f"[设置] 已从图书馆移除 app.sh({dst})")
+            print(f"[设置] 已从图书馆移除 kual.sh({dst})")
         else:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
-            print(f"[设置] 已部署 app.sh 到图书馆({dst})")
+            print(f"[设置] 已部署 kual.sh 到图书馆({dst})")
         STATE["library_on"] = not on
     except Exception as e:
         print(f"[设置] 切换图书馆开关失败:{type(e).__name__}: {e}")

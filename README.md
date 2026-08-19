@@ -11,10 +11,20 @@
 
 # 安装
 - 如果已经安装 πthon (HF) for kindle 请跳到第四步
+- 使用mrpi
 1. 下载 [πthon (HF) for kindle](https://github.com/lxdklp/python-for-kindle) Releases 里的 Update_install_python3.bin
 2. 拷贝到 Kindle 根目录下的 mrpackages 文件夹
 3. 然后在 Kindle 搜索框中输入 ;log mrpi 点击回车
+- 使用 kpm
+1. 下载 [πthon (HF) for kindle](https://github.com/lxdklp/python-for-kindle) Releases 里的 python3_3.14.3_kindlehf.kpkg
+2. 拷贝到 Kindle 根目录
+3. 然后在 Kindle 搜索框中输入 ;kpm install file:///mnt/us/python3_3.14.3_kindlehf.kpkg
+- 使用 kual
 4. Releases 中下载 kComics-*.zip
 5. 解压 kComics-*.zip 得到 kComics 文件夹
 6. 放入 kindle 的 extensions 文件夹
+- 使用 kpm
+4. Releases 中下载 kcomics_1.0.0_kindlehf.kpkg
+5. 拷贝到 Kindle 根目录
+6. 然后在 Kindle 搜索框中输入 ;kpm install file:///mnt/us/kcomics_1.0.0_kindlehf.kpkg
 7. 完成安装
