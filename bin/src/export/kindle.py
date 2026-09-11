@@ -1,19 +1,10 @@
-import io
 import os
 import shutil
 
 import config
 from . import mobi_convert
 
-try:
-    from PIL import Image
-    _HAS_PIL = True
-except ImportError:
-    Image = None
-    _HAS_PIL = False
-
 IMG_EXTS = ('.jpg', '.jpeg', '.webp', '.png', '.gif')
-JPEG_QUALITY = 88
 
 # Kindle 封面图
 THUMB_DIR = '/mnt/us/system/thumbnails'
@@ -74,28 +65,6 @@ def cleanup_downloads(root=None):
         except OSError:
             pass
 
-# 图片转换
-def _read_page(path):
-    with open(path, 'rb') as f:
-        data = f.read()
-    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
-        if not _HAS_PIL:
-            raise RuntimeError('WebP 图片需要 Pillow,但当前环境未安装')
-        assert Image is not None  # _HAS_PIL 为真时恒成立,此处仅收窄类型
-        img = Image.open(io.BytesIO(data))
-        img.load()
-        with io.BytesIO() as buf:
-            img.convert('RGB').save(buf, 'JPEG', quality=JPEG_QUALITY)
-            data = buf.getvalue()
-        return 'image/jpeg', data
-    if data[:2] == b'\xff\xd8':
-        return 'image/jpeg', data
-    if data[:8] == b'\x89PNG\r\n\x1a\n':
-        return 'image/png', data
-    if data[:6] in (b'GIF87a', b'GIF89a'):
-        return 'image/gif', data
-    raise ValueError(f'无法识别的图片格式:{os.path.basename(path)}')
-
 # 返回漫画已下载章节
 def scan_comic(title, root=None):
     base = root or config.get_downloads_dir()
@@ -114,14 +83,16 @@ def scan_comic(title, root=None):
     return chapters
 
 # 导出漫画为 Kindle MOBI
-def _convert_with_calibre(bname, pages, rtl, out_dir, resolution=None, tmp_dir=None,
-                            asin=None):
+def _convert_with_calibre(bname, page_paths, rtl, out_dir, resolution=None, tmp_dir=None,
+                            asin=None, grayscale=True, jpeg_quality=70, progress=None):
     filename = _safe(bname) + '.mobi'
     target = os.path.join(out_dir, filename)
     tmp = target + '.tmp'
     try:
-        mobi_convert.build_mobi(pages, bname, rtl=rtl, resolution=resolution,
-                                out_path=tmp, tmp_dir=tmp_dir, asin=asin)
+        mobi_convert.build_mobi_from_paths(page_paths, bname, rtl=rtl, resolution=resolution,
+                                            out_path=tmp, tmp_dir=tmp_dir, asin=asin,
+                                            grayscale=grayscale, jpeg_quality=jpeg_quality,
+                                            progress=progress)
         os.replace(tmp, target)
         return True, filename
     finally:
@@ -146,9 +117,20 @@ def _group_books(title, chapters, merged, chapters_per_book):
     return books
 
 # 导出漫画为 Kindle MOBI 并移动到书库
+# 三阶段流程:
+#   1. 处理图片:逐书转码落盘到任务临时目录,每页确认落盘后删除 download 原图(页进度)
+#   2. 导出为MOBI:逐书从 tmp 读回构建 .mobi(书本进度 stage='mobi')
+#   3. 移动:统一移入 Kindle 书库 + 锁屏缩略图(文件进度 stage='move')
 def export_comic(title, merged=True, chapters_per_book=5, rtl=True, docs_dir=None,
                 progress=None, ask_overwrite=None, stage_callback=None,
-                root=None, resolution=None):
+                root=None, resolution=None, grayscale=None, jpeg_quality=None,
+                workers=None):
+    if grayscale is None:
+        grayscale = config.get_export_grayscale()
+    if jpeg_quality is None:
+        jpeg_quality = config.get_export_jpeg_quality()
+    if workers is None:
+        workers = 2 if config.get_export_parallel() else 1
     docs_dir = docs_dir or config.get_kindle_documents_dir()
     chapters = scan_comic(title, root)
     if not chapters:
@@ -160,43 +142,63 @@ def export_comic(title, merged=True, chapters_per_book=5, rtl=True, docs_dir=Non
     except OSError as e:
         return False, f'创建书库目录失败:{type(e).__name__}'
     books = _group_books(title, chapters, merged, max(1, chapters_per_book))
+    view_w, view_h = mobi_convert.parse_resolution(resolution)
     import tempfile
     export_tmp_dir = config.get_export_tmp_dir()
     os.makedirs(export_tmp_dir, exist_ok=True)
-    tmp_dir = tempfile.mkdtemp(prefix='kcomics_export_', dir=export_tmp_dir)
+    task_tmp = tempfile.mkdtemp(prefix='kcomics_export_', dir=export_tmp_dir)
     built = []
     generated = []
     failed = []
     try:
-        # 1.全部生成到临时目录
         total_pages = sum(len(paths) for _, paths in books)
         pages_done = [0]
+        # ———— 阶段1:处理图片(转码落盘 tmp,确认成功才删原图)————
+        ready_books = []
         for bname, paths in books:
             if stage_callback:
                 stage_callback('build', 0, len(books), bname)
-            pages = []
-            for p in paths:
-                pages.append(_read_page(p))
-                pages_done[0] += 1
+            base = pages_done[0]
+
+            def _page_progress(i, _total):
+                pages_done[0] = base + i
                 if progress:
                     progress(pages_done[0], total_pages, bname)
+
+            book_tmp = os.path.join(task_tmp, _safe(bname))
+            cover, fail_n = mobi_convert.transcode_pages(
+                paths, book_tmp, view_w, view_h,
+                grayscale=grayscale, jpeg_quality=jpeg_quality,
+                workers=workers, progress=_page_progress)
+            if fail_n:
+                failed.append(f'{bname} 处理失败({fail_n} 页,已保留原图)')
+                continue
+            ready_books.append((bname, book_tmp, cover))
+        # ———— 阶段2:导出为MOBI(逐书从 tmp 读回构建,书本进度)————
+        total_books = len(ready_books)
+        for i, (bname, book_tmp, cover) in enumerate(ready_books, 1):
+            if stage_callback:
+                stage_callback('mobi', i - 1, total_books, bname)
             asin = mobi_convert._make_asin()
+            tmp_paths = [os.path.join(book_tmp, n) for n in sorted(os.listdir(book_tmp))]
             try:
-                ok, filename = _convert_with_calibre(bname, pages, rtl, tmp_dir, resolution,
-                                                    tmp_dir=export_tmp_dir, asin=asin)
+                ok, filename = _convert_with_calibre(bname, tmp_paths, rtl, task_tmp,
+                                                    resolution, tmp_dir=export_tmp_dir,
+                                                    asin=asin, grayscale=grayscale,
+                                                    jpeg_quality=jpeg_quality)
             except Exception as e:
                 ok, filename = False, f'{bname} 生成失败:{type(e).__name__}'
             if ok:
-                cover = pages[0] if pages else ('image/jpeg', b'')
-                built.append((filename, os.path.join(tmp_dir, filename), asin, cover))
+                built.append((filename, os.path.join(task_tmp, filename), asin, cover))
                 generated.append(filename)
             else:
                 failed.append(filename)
-        # 2.移动到 Kindle 书库
-        total_books = len(built)
+            if stage_callback:
+                stage_callback('mobi', i, total_books, bname)
+        # ———— 阶段3:移动到 Kindle 书库 ————
         for i, (filename, tmp_path, asin, cover) in enumerate(built, 1):
             if stage_callback:
-                stage_callback('move', i, total_books, filename)
+                stage_callback('move', i, len(built), filename)
             target = os.path.join(docs_dir, filename)
             if os.path.exists(target):
                 if ask_overwrite is None:
@@ -208,11 +210,11 @@ def export_comic(title, merged=True, chapters_per_book=5, rtl=True, docs_dir=Non
             except OSError as e:
                 failed.append(f'{filename} 移动失败:{type(e).__name__}')
             else:
-                # 3.移动成功后写入封面
+                # 移动成功后写入封面
                 _write_thumb(asin, cover[0], cover[1])
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    # 4.清理已下载的原始图片
+        shutil.rmtree(task_tmp, ignore_errors=True)
+    # 清理已下载的原始图片(成功页在阶段1已逐页删除,此处清残留)
     if generated:
         cleanup_downloads(root)
     if failed:

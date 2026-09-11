@@ -7,5 +7,8 @@
   "kindle_documents_dir": "/mnt/us/documents/kcomics",
   "export_merged": true,
   "export_chapters_per_book": 5,
-  "check_update": true
+  "check_update": true,
+  "export_grayscale": true,
+  "export_jpeg_quality": 70,
+  "export_parallel": true
 }

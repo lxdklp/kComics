@@ -2,6 +2,7 @@
 .vscode/
 .pytest_cache/
 tools/
+tmp/
 
 __pycache__
 **/*.pyc

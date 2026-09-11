@@ -11,6 +11,9 @@ DEFAULTS = {"api_url": "api.copy202601.com", "username": "", "token": "",
             "export_merged": True,
             "export_chapters_per_book": 5,
             "export_rtl": True,
+            "export_grayscale": True,
+            "export_jpeg_quality": 70,
+            "export_parallel": True,
             "kindle_documents_dir": "/mnt/us/documents",
             "check_update": True}
 
@@ -67,6 +70,18 @@ def get_export_chapters_per_book():
 # 是否向右翻页
 def get_export_rtl():
     return bool(load().get("export_rtl"))
+# 是否灰度化导出(e-ink 灰度屏上无差异,彩色屏机型请关闭)
+def get_export_grayscale():
+    return bool(load().get("export_grayscale"))
+# 导出 JPEG 质量(1-95)
+def get_export_jpeg_quality():
+    try:
+        return max(1, min(95, int(load().get("export_jpeg_quality") or 70)))
+    except (TypeError, ValueError):
+        return 70
+# 处理图片是否使用多线程(双核 Kindle 上 2 路并行转码)
+def get_export_parallel():
+    return bool(load().get("export_parallel"))
 # 自动检查更新
 def get_check_update():
     return bool(load().get("check_update"))

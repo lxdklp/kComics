@@ -55,6 +55,14 @@ _DL_LOCK = threading.Lock()
 _active = lambda: True
 _last_show = [0.0]
 
+# —————— 活动指示器(三点动画)与心跳刷屏 ——————
+ANIM_SIZE = 8              # 动画方块边长
+ANIM_GAP = 6               # 方块间距
+_ANIM_TICK = [0]           # 每次渲染 +1,驱动三点动画相位
+_HEART_SCREEN = [None]     # 心跳刷屏所需的 screen/fonts 引用(下载启动时登记)
+_HEART_FONTS = [None]
+_HEARTBEAT = [False]       # 心跳线程只启动一次
+
 def set_active_check(fn):
     global _active
     _active = fn
@@ -197,6 +205,8 @@ def _draw_dl_card(draw, w, h, fonts):
                  box_w - 2 * px(w, 0.02))
     draw.text(_center(draw, title, fonts[28], bx + box_w // 2, by + px(h, 0.035)),
                 title, fill=0, font=fonts[28])
+    _draw_anim(draw, bx + box_w - px(w, 0.02), by + px(h, 0.035) + 14,
+                _ANIM_TICK[0])
     label_w = px(w, DL_LABEL_W_R)
     bar_h = px(h, DL_BAR_H_R)
     bar_x = bx + px(w, 0.02) + label_w + px(w, 0.015)
@@ -225,15 +235,23 @@ def _draw_exp_card(draw, w, h, fonts):
     bx, by = (w - box_w) // 2, (h - box_h) // 2
     draw.rounded_rectangle([bx, by, bx + box_w, by + box_h], radius=20,
                             outline=0, width=3, fill=255)
-    moving = exp.get("stage") == "move"
-    title = "正在处理图片" if moving else "正在处理图片"
+    stage = exp.get("stage")
+    moving = stage == "move"
+    title = "正在导出MOBI" if stage == "mobi" else "正在处理图片"
     draw.text(_center(draw, title, fonts[28], bx + box_w // 2,
                         by + px(h, 0.035)), title, fill=0, font=fonts[28])
+    _draw_anim(draw, bx + box_w - px(w, 0.02), by + px(h, 0.035) + 14,
+                _ANIM_TICK[0])
     label_w = px(w, DL_LABEL_W_R)
     bar_h = px(h, DL_BAR_H_R)
     bar_x = bx + px(w, 0.02) + label_w + px(w, 0.015)
     bar_x2 = bx + box_w - px(w, 0.02)
-    prefix = "文件" if moving else "页"
+    if stage == "mobi":
+        prefix = "本"
+    elif moving:
+        prefix = "文件"
+    else:
+        prefix = "页"
     text = _fit(draw, f"{prefix} {exp['done']}/{exp['total']}", fonts[28], label_w)
     ty = by + px(h, DL_ROW1_R)
     draw.text((bx + px(w, 0.02), ty), text, fill=0, font=fonts[28])
@@ -529,6 +547,9 @@ def _toggle_fav(screen, fonts):
 
 # 下载
 def _start_download(screen, fonts):
+    _HEART_SCREEN[0] = screen
+    _HEART_FONTS[0] = fonts
+    _ensure_heartbeat()
     STATE["dl"] = {"running": True, "cur_name": "", "done": 0, "total": 0,
                     "page_done": 0, "page_total": 0}
     _show(screen, fonts)
@@ -688,6 +709,14 @@ def _run_export(screen, fonts, comic_title):
         resolution = f'{w}x{h}'
     except Exception:
         pass
+    # 灰度屏(EPDC bpp=1/8)才灰度化导出;彩色屏幕机型(Scribe 2025/Colorsoft)保持彩色
+    grayscale = config.get_export_grayscale()
+    try:
+        disp = screen.output.display
+        if disp is not None and getattr(disp, "bpp", 8) not in (1, 8):
+            grayscale = False
+    except Exception:
+        pass
     try:
         ok, msg = kindle.export_comic(
             comic_title,
@@ -696,6 +725,7 @@ def _run_export(screen, fonts, comic_title):
             rtl=config.get_export_rtl(),
             docs_dir=config.get_kindle_documents_dir(),
             resolution=resolution,
+            grayscale=grayscale,
             progress=lambda d, t, n: _exp_progress(screen, fonts, d, t, n),
             stage_callback=lambda s, d, t, n: _exp_stage(screen, fonts, s, d, t, n),
             ask_overwrite=lambda fn: _ask_overwrite(screen, fonts, fn))
@@ -712,9 +742,74 @@ def _run_export(screen, fonts, comic_title):
 
 # 上屏
 def _show(screen, fonts):
+    _ANIM_TICK[0] += 1   # 每次实际渲染都前进一帧动画
     with _DL_LOCK:
         try:
             screen.output.show(render(screen, fonts),
                                 is_flashing=bool(STATE["popup"]) and not STATE["dl"])
         except OSError as e:
             print(f"[输出] 刷新失败:{e}")
+
+# —————— 活动指示器与心跳 ——————
+
+# 动画盒:弹窗右上角区域 (x, y, w, h),绘制与局部刷新共用同一几何
+def _anim_box(w, h):
+    box_w = px(w, POPUP_W_R)
+    bx = (w - box_w) // 2
+    x_right = bx + box_w - px(w, 0.02)
+    y_center = (h - px(h, DL_CARD_H_R)) // 2 + px(h, 0.035) + 14
+    total = 3 * ANIM_SIZE + 2 * ANIM_GAP
+    return (x_right - total - 4, y_center - ANIM_SIZE // 2 - 4,
+            total + 8, ANIM_SIZE + 8)
+
+# 绘制三点指示器:第 phase%3 个实心,其余空心
+def _draw_anim(draw, x_right, y_center, phase):
+    for i in range(3):
+        x0 = x_right - (2 - i) * (ANIM_SIZE + ANIM_GAP) - ANIM_SIZE
+        y0 = y_center - ANIM_SIZE // 2
+        if i == phase % 3:
+            draw.rectangle([x0, y0, x0 + ANIM_SIZE, y0 + ANIM_SIZE], fill=0)
+        else:
+            draw.rectangle([x0, y0, x0 + ANIM_SIZE, y0 + ANIM_SIZE],
+                            outline=0, width=1)
+
+# 心跳线程(常驻,只启动一次):弹窗活跃期间每 ~1.2s 局部刷新动画盒,
+# 让用户在处理图片/构建 MOBI 等静默阶段也能看到程序在运行(不整屏刷,无全屏闪烁)
+# 诊断日志:[心跳] 执行 N 次,刷新被拒 M 次 —— 用于区分 线程饿死/ioctl被拒/EPDC吞更新
+def _ensure_heartbeat():
+    if _HEARTBEAT[0]:
+        return
+    _HEARTBEAT[0] = True
+
+    diag = {"n": 0, "last_log": 0, "rejected": 0}
+
+    def _beat():
+        while True:
+            time.sleep(DL_REFRESH_SEC * 4)
+            try:
+                screen = _HEART_SCREEN[0]
+                if screen is None or not _active():
+                    continue
+                if not (STATE.get("dl") or STATE.get("exp")):
+                    continue
+                _ANIM_TICK[0] += 1
+                with _DL_LOCK:
+                    from screen.output import WAVEFORM  # 延迟导入:避免把 fcntl 拉进测试环境
+                    w, h = screen.output.resolution
+                    img = render(screen, _HEART_FONTS[0])
+                    marker = screen.output.show(img, is_flashing=False,
+                                                waveform_mode=WAVEFORM.GC16,
+                                                region=_anim_box(w, h))
+                diag["n"] += 1
+                if marker is None:
+                    diag["rejected"] += 1
+                # 每 30 次(约36s)打一条;一旦出现被拒立即打一条
+                if diag["n"] - diag["last_log"] >= 30 or \
+                        (marker is None and diag["n"] - diag["last_log"] >= 5):
+                    diag["last_log"] = diag["n"]
+                    print(f"[心跳] 执行 {diag['n']} 次,刷新被拒 {diag['rejected']} 次"
+                          f"(marker={marker})")
+            except Exception as e:
+                print(f"[输出] 心跳刷新异常:{type(e).__name__}: {e}")
+
+    threading.Thread(target=_beat, daemon=True).start()

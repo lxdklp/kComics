@@ -19,6 +19,9 @@ ITEMS = (
     ("export_merged", "多章节合并", "bool"),
     ("export_chapters_per_book", "单本所含最大章数", "num"),
     ("export_rtl", "向右翻页", "bool"),
+    ("export_grayscale", "导出灰度图", "bool"),
+    ("export_jpeg_quality", "导出图片质量", "num"),
+    ("export_parallel", "多线程处理图片", "bool"),
     ("check_update", "自动检查更新", "bool"),
 )
 EXIT_ITEM = ("__exit__", "退出登录", "exit")
