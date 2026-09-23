@@ -33,6 +33,7 @@ from calibre.ebooks.mobi.writer2.resources import Resources  # noqa: E402
 from calibre.ebooks.mobi.writer8.main import create_kf8_book  # noqa: E402
 from calibre.ebooks.oeb.base import XHTML, XHTML_MIME, XHTML_NS  # noqa: E402
 from calibre.utils.logging import Log  # noqa: E402
+from .disk_resources import DiskRecord, DiskResources, DiskMobiWriter, RecordStore  # noqa: E402
 
 # Open EBook 对象模型
 class OEBItem:
@@ -44,6 +45,14 @@ class OEBItem:
         self.spine_position = None
         self.is_remote = False
         self.linear = linear
+    @property
+    def data(self):
+        if isinstance(self._data, DiskRecord):
+            return self._data.read()
+        return self._data
+    @data.setter
+    def data(self, value):
+        self._data = value
     def abshref(self, href):
         return urljoin(self.href, href)
     def relhref(self, href):
@@ -366,7 +375,8 @@ def transcode_pages(paths, out_dir, view_w, view_h, grayscale=True, jpeg_quality
     return first[0], failed[0]
 
 # 往 OEB 里追加一页(页面 XHTML + 图片资源)
-def _add_page(oeb, i, title, mime, data, view_w, view_h, grayscale, jpeg_quality):
+def _add_page(oeb, i, title, mime, data, view_w, view_h, grayscale, jpeg_quality,
+              record_store=None):
     mime, data, img_w, img_h = _fit_to_screen(mime, data, view_w, view_h,
                                               grayscale, jpeg_quality)
     ext = _MIME_EXT.get(mime, 'jpg')
@@ -378,19 +388,26 @@ def _add_page(oeb, i, title, mime, data, view_w, view_h, grayscale, jpeg_quality
     oeb.manifest.hrefs[page_href] = item
     oeb.spine.append(item)
     img_id = 'cover' if i == 1 else f'img{i}'
+    if record_store is not None:
+        data = record_store.add(data)
     img_item = OEBItem(img_id, img_href, mime, data)
     oeb.manifest[img_item.id] = img_item
     oeb.manifest.hrefs[img_item.href] = img_item
 
 # 收尾:KF8 联合 MOBI 写出
-def _finish_writer(oeb, opts, title, author, asin, out_path, tmp_dir):
+def _finish_writer(oeb, opts, title, author, asin, out_path, tmp_dir, record_store=None):
     oeb.metadata['cover'] = ['cover']
     oeb.guide['cover'] = GuideRef(f'images/img0001', 'Cover', 'cover')
     if author:
         oeb.metadata['creator'] = [author]
-    resources = Resources(oeb, opts, is_periodical=False, add_fonts=False)
+    if record_store is None:
+        resources = Resources(oeb, opts, is_periodical=False, add_fonts=False)
+        writer_type = MobiWriter
+    else:
+        resources = DiskResources(oeb, opts, record_store)
+        writer_type = DiskMobiWriter
     kf8 = create_kf8_book(oeb, opts, resources, for_joint=True)
-    writer = MobiWriter(opts, resources, kf8, write_page_breaks_after_item=True)
+    writer = writer_type(opts, resources, kf8, write_page_breaks_after_item=True)
     if out_path:
         writer(oeb, out_path)
         return None
@@ -416,15 +433,24 @@ def build_mobi(pages, title, author='', rtl=True, resolution=None, out_path=None
         _add_page(oeb, i, title, mime, data, view_w, view_h, grayscale, jpeg_quality)
     return _finish_writer(oeb, opts, title, author, asin, out_path, tmp_dir)
 
-# 生成 MOBI 文件(从磁盘路径逐页流式读取,内存只保留一页原始字节 + 转码后全量)
+# 生成 MOBI 文件 图片暂存磁盘
 def build_mobi_from_paths(paths, title, author='', rtl=True, resolution=None,
                             out_path=None, tmp_dir=None, asin=None,
                             grayscale=True, jpeg_quality=70, progress=None):
-    """逐页处理;progress(i, total) 在真实读页+转码后回调,页序号从 1 起."""
+    import tempfile
+    import config
+
     oeb, opts, view_w, view_h = _setup_oeb(title, rtl, resolution, asin)
-    for i, path in enumerate(paths, 1):
-        mime, data = _read_page(path)
-        _add_page(oeb, i, title, mime, data, view_w, view_h, grayscale, jpeg_quality)
-        if progress:
-            progress(i, len(paths))
-    return _finish_writer(oeb, opts, title, author, asin, out_path, tmp_dir)
+    spool_dir = tmp_dir or config.get_export_tmp_dir()
+    os.makedirs(spool_dir, exist_ok=True)
+    with tempfile.NamedTemporaryFile(prefix='kcomics_mobi_', dir=spool_dir) as spool:
+        record_store = RecordStore(spool)
+        for i, path in enumerate(paths, 1):
+            mime, data = _read_page(path)
+            _add_page(oeb, i, title, mime, data, view_w, view_h, grayscale, jpeg_quality,
+                        record_store=record_store)
+            del data
+            if progress:
+                progress(i, len(paths))
+        return _finish_writer(oeb, opts, title, author, asin, out_path, spool_dir,
+                                record_store=record_store)
