@@ -1,51 +1,84 @@
 name: Package
+
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       skip_release:
-        description: '不创建 Release'
+        description: '只打包，不创建 Release'
         required: false
         default: true
         type: boolean
 
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   package:
-    name: 打包
+    name: 打包 KPM 和 KUAL
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # 固定工具版本
+      KPM_HELPER_REV: 215736c5a2f5839d0aff0d6dfbd4965681228ee4
     steps:
       - uses: actions/checkout@v7
-      - name: 打包
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: 下载官方 KPM 打包工具
         run: |
-          mkdir -p kComics
-          cp -r bin kComics/
-          cp config.xml menu.json kComics/
-          NAME="kComics-${GITHUB_REF_NAME:-latest}.zip"
-          echo "ARCHIVE=$NAME" >> "$GITHUB_ENV"
-          zip -r "$NAME" kComics
-      - name: 上传构建产物
+          curl --fail --location --retry 3 \
+            "https://raw.githubusercontent.com/KindleModding/KPM/${KPM_HELPER_REV}/kpm-helper.py" \
+            --output "$RUNNER_TEMP/kpm-helper.py"
+      - name: 构建并检查安装包
+        env:
+          PACKAGE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          python .github/scripts/package.py \
+            --kpm-helper "$RUNNER_TEMP/kpm-helper.py" \
+            --tag "$PACKAGE_TAG" \
+            --output-dir dist
+      - name: 上传安装包与校验和
         uses: actions/upload-artifact@v7
         with:
-          name: kcomics-package
-          path: kComics-*.zip
+          name: kcomics-packages
+          path: |
+            dist/*.kpkg
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
 
   create-release:
-    name: 创建发布
-    needs: [package]
+    name: 发布安装包
+    needs: package
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') && github.event.inputs.skip_release != 'true'
+    timeout-minutes: 10
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || !inputs.skip_release)
     permissions:
       contents: write
     steps:
       - name: 下载构建产物
         uses: actions/download-artifact@v8
         with:
-          path: artifacts
+          name: kcomics-packages
+          path: dist
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: artifacts/kcomics-package/kComics-*.zip
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.kpkg
+            dist/*.zip
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
           generate_release_notes: true

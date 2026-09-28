@@ -3,6 +3,7 @@
 .pytest_cache/
 tools/
 tmp/
+dist/
 
 __pycache__
 **/*.pyc

@@ -21,7 +21,7 @@
 3. 然后在 Kindle 搜索框中输入 ;kpm install file:///mnt/us/python3_3.14.3_kindlehf.kpkg
 - 使用 kual
 4. Releases 中下载 kComics-*.zip
-5. 解压 kComics-*.zip 得到 kComics 文件夹
+5. 解压 kComics-*.zip 得到 kcomics 文件夹（小写）
 6. 放入 kindle 的 extensions 文件夹
 - 使用 kpm
 4. Releases 中下载 kcomics_1.0.0_kindlehf.kpkg

@@ -1,3 +1,3 @@
 #!/bin/sh
 
-bash /mnt/us/kmc/kpm/packages/kcomics/bin/start.sh
+exec sh "$(dirname "$0")/bin/start.sh"
